@@ -1,4 +1,4 @@
-import cv2
+# import cv2
 import numpy as np
 import PySimpleGUI as sg
 from logging import getLogger, INFO, basicConfig
@@ -7,14 +7,14 @@ from PIL import Image
 
 
 def check_white(img, ths):
-
+    new_img = np.zeros_like(img)
     for i, th in enumerate(ths):
         ch = img[:, :, i]
         if i == 0:
-            img[:, :, i] = np.where(ch > th, 255, ch)
+            new_img[:, :, i] = np.where(ch > th, 255, ch)
         else:
-            img[:, :, i] = np.where(ch > th, 0, ch)
-    return img
+            new_img[:, :, i] = np.where(ch > th, 0, ch)
+    return new_img
 # cv2.imwrite("img/test.jpg", lower_img)
 
 
@@ -53,11 +53,11 @@ checked_img = call_img(checked_img)
 
 layout = [
     [sg.Slider(range=(0, 254), orientation='h', enable_events=True,
-               size=(34, 20), key='__SLIDER1__', default_value=100)],
-    [sg.Slider(range=(1, 255), orientation='h', enable_events=True,
-               size=(34, 20), key='__SLIDER2__', default_value=200)],
+               size=(34, 20), key='__SLIDER1__', default_value=250)],
+    # [sg.Slider(range=(1, 255), orientation='h', enable_events=True,
+    #            size=(34, 20), key='__SLIDER2__', default_value=200)],
     [sg.Image(data=show_img)], [sg.Image(data=checked_img,  key='_OUTPUT_')]]
-window = sg.Window('edge', layout, finalize=True)
+window = sg.Window('白飛びチェック', layout, finalize=True)
 
 while True:
     event, values = window.read()
@@ -67,11 +67,15 @@ while True:
         break
     elif event == "__SLIDER1__":
         logger.info(values)
-        thmin = int(values["__SLIDER1__"])
+        th = int(values["__SLIDER1__"])
         logger.info("update edge")
-    elif event == "__SLIDER2__":
-        logger.info(values)
-        thmax = int(values["__SLIDER2__"])
-        logger.info("update edge")
+        checked_img = check_white(img, [th, th, th])
+        checked_img = Image.fromarray(checked_img)
+        checked_img = call_img(checked_img)
+        window['_OUTPUT_'].update(data=checked_img)
+    # elif event == "__SLIDER2__":
+    #     logger.info(values)
+    #     thmax = int(values["__SLIDER2__"])
+    #     logger.info("update edge")
 
 window.close()
