@@ -5,6 +5,8 @@ import copy
 import numpy as np
 from scipy import signal
 from tqdm import tqdm
+from scipy import sparse
+from scipy.sparse import csr_matrix, csc_matrix
 
 
 def upsampling(gradient):
@@ -50,19 +52,45 @@ def cal_divG(Gx, Gy):
 
 
 def get_coeff(h, w):
-    eye = np.eye(w*h)
+    # eye = np.eye(w*h)
+    eye = sparse.eye(w*h)
+    print(type(eye))
     # x方向の微分作用素を求める
-    upper = np.eye(w*h)
+    logger.info("tolil...")
+    upper = eye.tolil()
+    # upper = np.eye(w*h)
+    logger.info("tolil done!")
     upper[::w, ::w] = 0
-    upper = np.vstack((upper[1:], np.array([0]*w*h)))
+    # upper = np.vstack((upper[1:], np.array([0]*w*h)))
+    upper = sparse.vstack((upper[1:], np.array([0]*w*h)), format='csr')
+    logger.info(f"{type(upper)}")
     coeff_x = upper + -2*eye + upper.T
-
+    logger.info(f"{type(coeff_x)}")
+    logger.info("calc coeff_x done!")
     # y方向の微分作用素を求める
-    zeros = np.zeros((w, w*h))
-    upper = np.vstack((eye[w:, :], zeros))
+    zeros = csr_matrix(np.zeros((w, w*h)))
+    upper = sparse.vstack((eye[w:, :], zeros), format='csr')
     lower = upper.T
     coeff_y = upper + -2*eye + lower
+    logger.info("calc coeff_y done!")
     return coeff_x, coeff_y
+
+
+def get_DLU(h, w):
+    """微分作用素の対角行列と上三角行列と下三角行列を返す関数
+
+    Args:
+        h (int): 勾配を操作する領域の高さ
+        w (int): 勾配を操作する領域の幅
+
+    Returns:
+        scipy sparse matrix csr形式:
+    """
+    D = sparse.eye(w*h)*-4
+    # 
+    U = sparse.diags([1]*(w*h-1), offsets=1, format="csr")
+    U += sparse.diags([1]*(w*(h-1)), offsets=w, format="csr")
+    return D, U.T, U
 
 
 def get_b(boundary, dGx, dGy):
@@ -95,8 +123,10 @@ def get_b(boundary, dGx, dGy):
 def gauss_seidel(M, N, b, k_max, epsilon, x):
     success = False
     for i in tqdm(range(k_max)):
-        new_x = np.dot(M, x) + np.dot(N, b)
-        if np.linalg.norm(new_x-x) < epsilon:
+        # new_x = np.dot(M, x) + np.dot(N, b)
+        new_x = M.dot(x) + N.dot(b)
+        delta = new_x-x
+        if np.linalg.norm(delta.toarray()) < epsilon:
             success = True
             break
         x = new_x
@@ -109,7 +139,7 @@ def gauss_seidel(M, N, b, k_max, epsilon, x):
 
 
 if __name__ == "__main__":
-    higres_img = cv2.imread('img/sample.jpg')
+    higres_img = cv2.imread('img/sample.hdr')
     logger.info(f"{higres_img.shape}")
     d = 4
     pylamid = []
@@ -153,25 +183,32 @@ if __name__ == "__main__":
     tmpdGx = dGx[..., 0]
     h, w = tmpdGx.shape
     # ガウスザイデル法で利用する行列の生成
-    coeff_x, coeff_y = get_coeff(h, w)
-    A = coeff_x + coeff_y
-    D, L, U = np.diag(A), np.tril(A, k=1), np.triu(A, k=1)
-    M = - np.dot(np.linalg.inv(D+L), U)
-    N = np.linalg.inv(D+L)
+    # coeff_x, coeff_y = get_coeff(h, w)
+    # A = coeff_x + coeff_y
+    # D, L, U = np.diag(A), np.tril(A, k=1), np.triu(A, k=1)
+    logger.info(f"{h=}, {w=}")
+    D, L, U = get_DLU(h, w)
+    logger.info("get DLU!")
+    M = - sparse.linalg.inv(D+L) * U
+    logger.info("calc M!")
+    N = sparse.linalg.inv(D+L)
+    logger.info("calc N!")
     # ガウスザイデル法の初期値を生成
     blur_img = higres_img
     for i in range(4):
         blur_img = cv2.blur(blur_img, (5, 5))
     blur_img = blur_img[1:-1, 1:-1]
-
+    logger.info("get defult image")
     for i in range(3):
+        logger.info("calc {i} channel")
         b = get_b(new_img[..., i], dGx[..., i], dGy[..., i])
         x = blur_img[..., i].reshape((-1, 1))
-        ans = gauss_seidel(M, N, b, 1000, epsilon, )
-        ans.reshape((h, w))
+        b, x = csc_matrix(b), csc_matrix(x)
+        ans = gauss_seidel(M, N, b, 1000, epsilon, x)
+        ans = ans.toarray().reshape((h, w))
         new_img[1:-1, 1:-1, i] = ans
-
+        logger.info("calc {i} channel done!")
     new_img = np.log(new_img)
     new_img = np.clip(255*new_img, 0, 1)
     new_img = np.uint8(new_img)
-    cv2.imwrite("img/new_img.jpg", new_img)
+    cv2.imwrite("img/new_img.png", new_img)
