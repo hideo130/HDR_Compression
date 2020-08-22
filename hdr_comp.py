@@ -4,6 +4,7 @@ from logzero import logger
 import copy
 import numpy as np
 from scipy import signal
+from tqdm import tqdm
 
 
 def upsampling(gradient):
@@ -26,15 +27,37 @@ def upsampling(gradient):
     return new_gradient
 
 
+def cal_divG(Gx, Gy):
+    """divGを計算する
+        G=(Gx, Gy)
+        入力画像サイズを(w,h,3)とする．
+    Args:
+        Gx (numpy): ベクトル場のx成分 shape=(w,h,3)
+        Gy (numpy): ベクトル場のy成分 shape=(w,h,3)
+
+    Returns:
+        divG: dGx,dGyのshapeは(w-2, h-2,3)
+    """
+    padding_Gx = np.pad(Gx, ((0, 0), (1, 1), (0, 0)), "edge")
+    dGx = (padding_Gx[:, 1:-1] - padding_Gx[:, :-2])
+    # 端は使わない
+    dGx = dGx[1:-1, 1:-1]
+    padding_Gy = np.pad(Gy, ((1, 1), (0, 0), (0, 0)), "edge")
+    dGy = (padding_Gy[1:-1, ...] - padding_Gy[:-2, ...])
+    # 端は使わない
+    dGy = dGy[1:-1, 1:-1]
+    return dGx, dGy
+
+
 def get_coeff(h, w):
     eye = np.eye(w*h)
-    # x方向の微分係数を求めている
+    # x方向の微分作用素を求める
     upper = np.eye(w*h)
     upper[::w, ::w] = 0
     upper = np.vstack((upper[1:], np.array([0]*w*h)))
     coeff_x = upper + -2*eye + upper.T
 
-    # y方向の微分係数を求めている
+    # y方向の微分作用素を求める
     zeros = np.zeros((w, w*h))
     upper = np.vstack((eye[w:, :], zeros))
     lower = upper.T
@@ -50,13 +73,15 @@ def get_b(boundary, dGx, dGy):
     # 上と下の端は削除
     boundary_x = boundary[1:-1, :]  # (w,h)->(w, h-2)
 
-    boundary_x = np.delete(boundary_x, [1, 2], axis=1)  # (w, h-2) -> (w-2, h-2)
+    # (w, h-2) -> (w-2, h-2)
+    boundary_x = np.delete(boundary_x, [1, 2], axis=1)
     boundary_x = boundary_x.reshape((-1, 1))
 
     # y微分のときに必要なのは上と下の端
     # 左右の端は削除
     boundary_y = boundary[:, 1:-1]  # (w,h)->(w-2, h)
-    boundary_y = np.delete(boundary_y, [1, 2], axis=0)  # (w-2, h) -> (w-2, h-2)
+    # (w-2, h) -> (w-2, h-2)
+    boundary_y = np.delete(boundary_y, [1, 2], axis=0)
     boundary_y = boundary_y.reshape((-1, 1))
 
     logger.debug(f"{boundary_x=}")
@@ -67,15 +92,32 @@ def get_b(boundary, dGx, dGy):
     return boundary_x + boundary_y + dGx.reshape((-1, 1)) + dGy.reshape((-1, 1))
 
 
+def gauss_seidel(M, N, b, k_max, epsilon, x):
+    success = False
+    for i in tqdm(range(k_max)):
+        new_x = np.dot(M, x) + np.dot(N, b)
+        if np.linalg.norm(new_x-x) < epsilon:
+            success = True
+            break
+        x = new_x
+
+    if success:
+        return new_x
+    else:
+        print("失敗")
+        return new_x
+
+
 if __name__ == "__main__":
-    higher_res = cv2.imread('img/sample.jpg')
-    logger.info(f"{higher_res.shape}")
+    higres_img = cv2.imread('img/sample.jpg')
+    logger.info(f"{higres_img.shape}")
     d = 4
     pylamid = []
 
-    lower_img = copy.deepcopy(higher_res)
-    # lower_img = float(lower_img)/255
-    # lower_img = np.exp(lower_img)
+    higres_img = np.float32(higres_img) / 255
+    higres_img = np.exp(higres_img)
+
+    lower_img = copy.deepcopy(higres_img)
     for i in range(d+1):
         lower_img_ap = np.pad(lower_img, ((1, 1), (1, 1), (0, 0)), "edge")
         dy = (lower_img_ap[2:, 1:-1] - lower_img_ap[:-2, 1:-1])/2**(i+1)
@@ -102,28 +144,34 @@ if __name__ == "__main__":
 
     H = pylamid[0]
     Gx, Gy = next_factor*H[0], next_factor*H[1]
-    padding_Gx = np.pad(Gx, ((0, 0), (1, 1), (0, 0)), "edge")
-    dGx = (padding_Gx[:, 1:-1] - padding_Gx[:, :-2])
-    # 端は使わない
-    dGx = dGx[1:-1, 1:-1]
-    padding_Gy = np.pad(Gy, ((1, 1), (0, 0), (0, 0)), "edge")
-    dGy = (padding_Gy[1:-1, ...] - padding_Gy[:-2, ...])
-    # 端は使わない
-    dGy = dGy[1:-1, 1:-1]
+    dGx, dGy = cal_divG(Gx, Gy)
 
-    new_img = copy.deepcopy(higher_res)
+    # 端だけの残した画像の生成
+    new_img = copy.deepcopy(higres_img)
     new_img[1:-1, 1:-1, :] = 0
-    # 勾配の操作を各チャネルで行う．
+
     tmpdGx = dGx[..., 0]
     h, w = tmpdGx.shape
-
+    # ガウスザイデル法で利用する行列の生成
     coeff_x, coeff_y = get_coeff(h, w)
-    for i in range(3):
-        tmpdGx = dGx[..., i]
-        h, w = tmpdGx.shape
-        b = get_b(new_img[..., i], dGx[..., i], dGy[..., i])
-        
-    logger.info(f"{next_factor.shape=}")
-    logger.info(f"{higher_res.shape}")
+    A = coeff_x + coeff_y
+    D, L, U = np.diag(A), np.tril(A, k=1), np.triu(A, k=1)
+    M = - np.dot(np.linalg.inv(D+L), U)
+    N = np.linalg.inv(D+L)
+    # ガウスザイデル法の初期値を生成
+    blur_img = higres_img
+    for i in range(4):
+        blur_img = cv2.blur(blur_img, (5, 5))
+    blur_img = blur_img[1:-1, 1:-1]
 
-    # cv2.imwrite("img/test.jpg", lower_img)
+    for i in range(3):
+        b = get_b(new_img[..., i], dGx[..., i], dGy[..., i])
+        x = blur_img[..., i].reshape((-1, 1))
+        ans = gauss_seidel(M, N, b, 1000, epsilon, )
+        ans.reshape((h, w))
+        new_img[1:-1, 1:-1, i] = ans
+
+    new_img = np.log(new_img)
+    new_img = np.clip(255*new_img, 0, 1)
+    new_img = np.uint8(new_img)
+    cv2.imwrite("img/new_img.jpg", new_img)

@@ -1,10 +1,10 @@
+from hdr_comp import get_coeff, get_b
 import numpy as np
 from logzero import logger
 from pathlib import Path
 import sys
 import_path = Path(__file__).resolve().parents[1]
 sys.path.append(str(import_path))
-from hdr_comp import get_coeff, get_b
 
 
 def print_coeff():
@@ -17,10 +17,9 @@ def print_coeff():
 
 def print_b():
     img = np.arange(25).reshape((5, 5))
-    img[1:-1,1:-1] = 0
-    tmp = np.zeros((3,3))
+    img[1:-1, 1:-1] = 0
+    tmp = np.zeros((3, 3))
     get_b(img, tmp, tmp)
-    
 
 
 if __name__ == "__main__":
